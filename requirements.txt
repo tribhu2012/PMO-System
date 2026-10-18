@@ -1,0 +1,10 @@
+# Core app
+streamlit==1.66.0
+pandas==3.0.6
+numpy==2.5.4
+plotly==7.1.0
+scikit-learn==1.9.1
+joblib==1.6.0
+SQLAlchemy==2.1.5
+psycopg[binary]==3.3.6
+python-dotenv==1.2.4

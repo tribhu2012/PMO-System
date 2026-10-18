@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: projectpulse
+      POSTGRES_PASSWORD: projectpulse
+      POSTGRES_DB: projectpulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U projectpulse"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://projectpulse:projectpulse@db:5432/projectpulse
+    ports:
+      - "8501:8501"
+
+volumes:
+  pgdata:
