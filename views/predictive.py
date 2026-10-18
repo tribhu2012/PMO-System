@@ -9,7 +9,9 @@ from projectpulse import config, ml
 from projectpulse.metrics import classify_delay
 from projectpulse.ui import components as ui
 from projectpulse.ui import state
-from projectpulse.ui.theme import DELAY_CLASS_COLORS, GRID, INK, SEQ_BLUE, SERIES, STATUS
+from projectpulse.ui.theme import (
+    AREA, BAND_STRONG, DELAY_CLASS_COLORS, GRID, INK, SEQ_BLUE, SERIES, SERIF, STATUS,
+)
 
 ctx = state.get_ctx()
 model = state.delay_model(ctx.data, ctx.version)
@@ -22,17 +24,25 @@ scored = (model.score_frame(ml.current_features(pm)).sort_values("delay_probabil
 n_high = int((scored.risk_class == "High Risk").sum()) if len(scored) else 0
 
 m = model.metrics
+n_med = int((scored.risk_class == "Medium Risk").sum()) if len(scored) else 0
+n_low = len(scored) - n_high - n_med
+high_names = (scored[scored.risk_class == "High Risk"].project_name.str.replace("Project ", "").tolist()
+              if len(scored) else [])
+ui.headline((f"<b>{n_high} of {len(scored)} active projects are likely to finish late</b> "
+             f"({', '.join(high_names)})" if n_high else
+             f"<b>None of the {len(scored)} active projects is at high risk of finishing late</b>")
+            + f". On past projects the model ranks a late project above an on-time one "
+              f"{m['roc_auc']:.0%} of the time.",
+            tone="bad" if n_high else "good", icon="insights")
 ui.kpi_grid([
-    dict(label="ROC AUC", value=f"{m['roc_auc']:.2f}", icon="query_stats", sub="Held-out test set"),
-    dict(label="Accuracy", value=ui.fmt_pct(m["accuracy"]), icon="target",
-         sub=f"Threshold 0.50 · {model.n_test} test projects"),
-    dict(label="Precision", value=ui.fmt_pct(m["precision"]), icon="filter_center_focus",
-         sub="Flagged projects that were late"),
-    dict(label="Recall", value=ui.fmt_pct(m["recall"]), icon="radar", sub="Late projects that were flagged"),
-    dict(label="F1 Score", value=f"{m['f1']:.2f}", icon="balance", tone="violet",
-         sub=f"Base delay rate {m['base_rate']:.0%}"),
-    dict(label="High-Risk Projects", value=f"{n_high}", icon="notification_important",
-         tone="bad" if n_high else "good", sub=f"of {len(scored)} active projects (≥ 65%)"),
+    dict(label="High Risk", value=f"{n_high}", icon="notification_important",
+         tone="bad" if n_high else "good", sub=f"Delay probability ≥ {config.DELAY_CLASS_BANDS['Medium Risk']:.0%}"),
+    dict(label="Medium Risk", value=f"{n_med}", icon="error", tone="warn" if n_med else "good",
+         sub=f"{config.DELAY_CLASS_BANDS['Low Risk']:.0%}–{config.DELAY_CLASS_BANDS['Medium Risk']:.0%}"),
+    dict(label="Low Risk", value=f"{n_low}", icon="check_circle", tone="good",
+         sub=f"Below {config.DELAY_CLASS_BANDS['Low Risk']:.0%}"),
+    dict(label="Model ROC AUC", value=f"{m['roc_auc']:.2f}", icon="query_stats", tone="violet",
+         sub=f"Accuracy {m['accuracy']:.0%} · recall {m['recall']:.0%} on {model.n_test} test projects"),
 ])
 
 # --------------------------------------------------------------------------- live predictions
@@ -67,8 +77,8 @@ with ui.card("predictions"):
             view = view.assign(project_name=view.project_name.str.replace("Project ", ""),
                                delay_probability=view.delay_probability * 100,
                                avg_resource_utilization=view.avg_resource_utilization * 100,
-                               risk_class=view.risk_class.map({"Low Risk": "🟢 Low", "Medium Risk": "🟡 Medium",
-                                                               "High Risk": "🔴 High"}))
+                               risk_class=view.risk_class.map({"Low Risk": "● Low", "Medium Risk": "▲ Medium",
+                                                               "High Risk": "■ High"}))
             st.dataframe(view, hide_index=True, width="stretch", height="content", column_config={
                 "project_name": "Project",
                 "delay_probability": st.column_config.ProgressColumn("Delay", min_value=0, max_value=100, format="%.0f%%"),
@@ -80,50 +90,6 @@ with ui.card("predictions"):
                 "tasks_remaining": "Backlog",
             })
 
-# --------------------------------------------------------------------------- model diagnostics
-H2 = 290
-c1, c2, c3 = ui.row(3)
-with c1, ui.card("cm"):
-    ui.card_header("Confusion Matrix", f"Test set ({model.n_test} projects), threshold 0.50")
-    cm = model.confusion
-    text = [[f"<b>{cm[i, j]}</b><br>{cm[i, j] / cm.sum():.0%}" for j in range(2)] for i in range(2)]
-    fig = go.Figure(go.Heatmap(
-        z=cm, x=["Pred. on time", "Pred. delayed"], y=["Actual on time", "Actual delayed"],
-        colorscale=[[0, SEQ_BLUE[0]], [1, SEQ_BLUE[8]]], showscale=False, xgap=4, ygap=4,
-        text=text, texttemplate="%{text}", textfont=dict(size=15),
-        hovertemplate="%{y} · %{x}: %{z}<extra></extra>"))
-    fig.update_layout(yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
-                      xaxis=dict(side="top", linecolor="rgba(0,0,0,0)"), margin=dict(t=24))
-    ui.chart(fig, height=H2, key="cm")
-
-with c2, ui.card("roc"):
-    ui.card_header("ROC Curve", f"Area under curve = {m['roc_auc']:.3f}")
-    roc = model.roc
-    fig = go.Figure()
-    fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="Chance",
-                    line=dict(color=INK["muted"], dash="dot", width=1), hoverinfo="skip")
-    fig.add_scatter(x=roc.fpr, y=roc.tpr, mode="lines", name=model.model_name,
-                    line=dict(color=SERIES[0]), fill="tozeroy", fillcolor="rgba(42,120,214,0.08)",
-                    customdata=roc.threshold.clip(upper=1),
-                    hovertemplate="FPR %{x:.2f} · TPR %{y:.2f}<br>Threshold %{customdata:.2f}<extra></extra>")
-    fig.update_layout(xaxis=dict(title="False positive rate", range=[0, 1], showgrid=True, gridcolor=GRID),
-                      yaxis=dict(title="True positive rate", range=[0, 1.02]), showlegend=False,
-                      margin=dict(t=8))
-    ui.chart(fig, height=H2, key="roc")
-
-with c3, ui.card("importance"):
-    ui.card_header("Feature Importance", "Permutation importance (drop in ROC AUC)")
-    imp = model.importance.sort_values("importance")
-    fig = go.Figure(go.Bar(
-        x=imp.importance, y=imp.label.str.replace(" (AC ÷ EV)", "", regex=False), orientation="h",
-        marker_color=SERIES[0], width=0.55,
-        error_x=dict(type="data", array=imp["std"], color=INK["muted"], thickness=1),
-        hovertemplate="%{y}<br>ΔAUC %{x:.3f}<extra></extra>"))
-    fig.update_layout(yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=11)),
-                      xaxis=dict(showgrid=True, gridcolor=GRID), margin=dict(t=8))
-    ui.chart(fig, height=H2, key="importance")
-
-# --------------------------------------------------------------------------- what-if
 with ui.card("whatif"):
     ctrl = ui.card_header("Prediction Interface",
                           "Start from a project, then move the drivers to run a what-if scenario", controls=0.3)
@@ -151,12 +117,12 @@ with ui.card("whatif"):
     with c2:
         fig = go.Figure(go.Indicator(
             mode="gauge+number", value=p * 100,
-            number=dict(suffix="%", valueformat=".0f", font=dict(size=42, color=INK["primary"])),
+            number=dict(suffix="%", valueformat=".0f", font=dict(size=40, color=INK["primary"], family=SERIF)),
             gauge=dict(axis=dict(range=[0, 100], tickcolor=INK["muted"], tickfont=dict(size=10)),
                        bar=dict(color=INK["primary"], thickness=0.25), borderwidth=0,
-                       steps=[dict(range=[0, 35], color="rgba(12,163,12,0.20)"),
-                              dict(range=[35, 65], color="rgba(250,178,25,0.28)"),
-                              dict(range=[65, 100], color="rgba(208,59,59,0.20)")])))
+                       steps=[dict(range=[0, 35], color=BAND_STRONG["Green"]),
+                              dict(range=[35, 65], color=BAND_STRONG["Yellow"]),
+                              dict(range=[65, 100], color=BAND_STRONG["Red"])])))
         fig.update_layout(margin=dict(l=30, r=30, t=30, b=0), title=dict(text="Delay probability"))
         ui.chart(fig, height=250, key="whatif_gauge")
         kind = {"Low Risk": "good", "Medium Risk": "warn", "High Risk": "bad"}[cls]
@@ -173,7 +139,7 @@ with ui.card("whatif"):
                           yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=11)),
                           xaxis=dict(ticksuffix=" pts", showgrid=True, gridcolor=GRID))
         ui.chart(fig, height=250, key="whatif_drivers")
-        ui.note("Red pushes delay risk up · blue pulls it down (vs a typical project).")
+        ui.note("Red pushes delay risk up · navy pulls it down (vs a typical project).")
 
 with st.expander("Model details & methodology", icon=":material/info:"):
     st.markdown(f"""
@@ -196,3 +162,49 @@ with st.expander("Model details & methodology", icon=":material/info:"):
         model = ml.train(ctx.data["project_history"])
         ml.save(model)
         st.rerun()
+
+# --------------------------------------------------------------------------- model diagnostics
+H2 = 290
+det = ui.details("Show details: how accurate the model is and what drives it")
+c1, c2, c3 = ui.row(3, parent=det)
+with c1, ui.card("cm"):
+    ui.card_header("Confusion Matrix", f"Test set ({model.n_test} projects), threshold 0.50")
+    cm = model.confusion
+    text = [[f"<b>{cm[i, j]}</b><br>{cm[i, j] / cm.sum():.0%}" for j in range(2)] for i in range(2)]
+    fig = go.Figure(go.Heatmap(
+        z=cm, x=["Pred. on time", "Pred. delayed"], y=["Actual on time", "Actual delayed"],
+        colorscale=[[0, SEQ_BLUE[0]], [1, SEQ_BLUE[8]]], showscale=False, xgap=4, ygap=4,
+        text=text, texttemplate="%{text}", textfont=dict(size=15),
+        hovertemplate="%{y} · %{x}: %{z}<extra></extra>"))
+    fig.update_layout(yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
+                      xaxis=dict(side="top", linecolor="rgba(0,0,0,0)"), margin=dict(t=24))
+    ui.chart(fig, height=H2, key="cm")
+
+with c2, ui.card("roc"):
+    ui.card_header("ROC Curve", f"Area under curve = {m['roc_auc']:.3f}")
+    roc = model.roc
+    fig = go.Figure()
+    fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="Chance",
+                    line=dict(color=INK["muted"], dash="dot", width=1), hoverinfo="skip")
+    fig.add_scatter(x=roc.fpr, y=roc.tpr, mode="lines", name=model.model_name,
+                    line=dict(color=SERIES[0]), fill="tozeroy", fillcolor=AREA,
+                    customdata=roc.threshold.clip(upper=1),
+                    hovertemplate="FPR %{x:.2f} · TPR %{y:.2f}<br>Threshold %{customdata:.2f}<extra></extra>")
+    fig.update_layout(xaxis=dict(title="False positive rate", range=[0, 1], showgrid=True, gridcolor=GRID),
+                      yaxis=dict(title="True positive rate", range=[0, 1.02]), showlegend=False,
+                      margin=dict(t=8))
+    ui.chart(fig, height=H2, key="roc")
+
+with c3, ui.card("importance"):
+    ui.card_header("Feature Importance", "Permutation importance (drop in ROC AUC)")
+    imp = model.importance.sort_values("importance")
+    fig = go.Figure(go.Bar(
+        x=imp.importance, y=imp.label.str.replace(" (AC ÷ EV)", "", regex=False), orientation="h",
+        marker_color=SERIES[0], width=0.55,
+        error_x=dict(type="data", array=imp["std"], color=INK["muted"], thickness=1),
+        hovertemplate="%{y}<br>ΔAUC %{x:.3f}<extra></extra>"))
+    fig.update_layout(yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=11)),
+                      xaxis=dict(showgrid=True, gridcolor=GRID), margin=dict(t=8))
+    ui.chart(fig, height=H2, key="importance")
+
+# --------------------------------------------------------------------------- what-if

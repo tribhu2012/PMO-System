@@ -2,7 +2,7 @@
 
 **Project portfolio management and agile analytics platform.** ProjectPulse works like Jira with a PMO analytics layer on top. Executives, project managers, scrum masters and team leads use it to see portfolio health, budgets, risks, agile delivery and team performance. It also predicts which projects will be late and explains why.
 
-Built with **Streamlit · PostgreSQL · SQLAlchemy · pandas · NumPy · Plotly · scikit-learn**. The data is synthetic: Jira-style records for *TechNova Solutions*, a 75-person company.
+Built with **Streamlit · PostgreSQL · SQLAlchemy · pandas · NumPy · Plotly · scikit-learn**. The data is synthetic: Jira-style records for a fictional 75-person company.
 
 ![Executive dashboard](docs/screenshots/01_executive.png)
 
@@ -26,7 +26,7 @@ I built ProjectPulse to show a move from **project management** into **data anal
 
 | # | Page | What it answers |
 |---|---|---|
-| 1 | **Executive Dashboard** | How healthy is the portfolio? Six KPI cards, a health gauge, a budget trend (cumulative or monthly), status distribution, a risk breakdown, a department comparison, a health trend and a "needs attention" list |
+| 1 | **Executive Dashboard** | How healthy is the portfolio, and what needs a decision? A one-line summary, four KPIs, a "Needs a decision" list (each Red/Yellow project with its main driver and the recommended action) and the health trend. Budget trend, status, risk and department charts sit under *Show details* |
 | 2 | **Project Portfolio** | Which projects are in trouble? A register with green/yellow/red health scores, the health composition, an SPI × CPI quadrant, and a drill-down per project (PV/EV/AC/EAC/VAC, forecast finish, timeline) |
 | 3 | **Resource Management** | Who is overloaded? Utilisation KPIs, an employee × month workload heatmap, department utilisation, capacity vs assignment, and a resource register |
 | 4 | **Risk Management** | Where is the exposure? A 5×5 risk matrix, a probability × impact scatter, open-risk trends (raised and resolved), exposure by project, and the top-risk register |
@@ -34,10 +34,13 @@ I built ProjectPulse to show a move from **project management** into **data anal
 | 6 | **Team Performance** | Who delivers? Completion, on-time delivery, defect rate, peer review, a weighted performance score, top performers, distribution, department comparison and a ranking |
 | 7 | **Predictive Analytics** | Which projects will be late? Live delay probability with a Low/Medium/High class, plus model metrics, confusion matrix, ROC curve, feature importance and an interactive prediction interface |
 | 8 | **AI Insights** | *"Why is Project Phoenix unhealthy?"* Generated executive briefing, project diagnosis with ranked drivers and recommendations, and a chat assistant |
+| 9 | **Data Import** | Download the Jira / PMO / HR workbook templates, upload filled ones, see every problem by file, sheet, row and column, then replace the data in one transaction. Keeps an import history |
+
+**Built for stakeholders who skim:** every page opens with a one-sentence headline that answers the page's question, then four KPIs and the one or two charts that support it. Secondary charts are collapsed under *Show details*; the sidebar's **Analyst view** switch opens them all.
 
 **Across all pages:** a light design system with sidebar navigation, a global **date filter** (presets or a custom range), **department** and **project** filters with one-click reset, and pills showing the active filters in every page header. Every table exports to CSV.
 
-**Design system:** Inter type and a light, card-based layout. Every page opens with six KPI cards of identical size, and cards in the same row stretch to equal height. The chart palette is checked for colour-blind safety, and status colours (good, warning, critical) always come with an icon and a label. The layout is responsive: 6 → 3 → 2 KPI columns, and cards stack on phones.
+**Design system:** Inter type and a light, card-based layout. Every page opens with a headline and four KPI cards of identical size, and cards in the same row stretch to equal height. The chart palette is checked for colour-blind safety, and status colours (good, warning, critical) always come with an icon and a label. The layout is responsive: 4 → 2 KPI columns, and cards stack on phones.
 
 <details>
 <summary><b>More screenshots</b></summary>
@@ -62,24 +65,28 @@ ProjectPulse/
 │   ├── config.py               # Settings + business rules (weights, thresholds)
 │   ├── models.py               # SQLAlchemy ORM models (mirror sql/01_schema.sql)
 │   ├── database.py             # Engine, schema build, bulk load, typed reads
-│   ├── data_generator.py       # Synthetic Jira-style data for TechNova Solutions
+│   ├── data_generator.py       # Synthetic Jira-style data for a fictional company
 │   ├── metrics.py              # EVM, health, agile, utilisation and people metrics
 │   ├── ml.py                   # Delay-prediction model (train / evaluate / explain)
 │   ├── insights.py             # Rule-based AI insights + chat intent router
+│   ├── importer.py             # Excel/CSV workbooks -> validated tables; template writer
 │   └── ui/
 │       ├── theme.py            # Design tokens, palette, Plotly template, CSS
 │       ├── components.py       # Page header, KPI grid, cards, chart wrapper, CSV export
 │       └── state.py            # Caching, global filters, filtered page context
-├── views/                      # One file per dashboard page (8 pages)
+├── views/                      # One file per page (8 dashboards + Data Import)
+├── templates/                  # Blank import workbooks (jira_export, pmo_portfolio, hr_resources)
 ├── sql/
 │   ├── 01_schema.sql           # PostgreSQL DDL (tables, constraints, indexes)
 │   ├── 02_views.sql            # Analytical views (EVM summary, sprint metrics, …)
 │   └── 03_sample_queries.sql   # Example PMO questions answered in SQL
 ├── scripts/
 │   ├── generate_data.py        # Generate the data set -> CSV
-│   ├── load_data.py            # Build schema + load PostgreSQL + train model
+│   ├── load_data.py            # Build schema + load synthetic data + train model
+│   ├── import_excel.py         # Validate workbooks and load them (CLI version of Data Import)
+│   ├── make_templates.py       # Write blank templates, sample or current-data workbooks
 │   └── train_model.py          # Retrain the delay model
-├── tests/test_projectpulse.py  # 36 tests: generator, metrics, ML, insights, DB
+├── tests/                      # 48 tests: generator, metrics, ML, insights, DB, importer
 ├── models/                     # Saved model artefact (generated)
 ├── assets/                     # Logo + favicon
 ├── docs/screenshots/
@@ -185,6 +192,30 @@ All seven tables from the brief are implemented with the requested columns. A fe
 
 ---
 
+## Where the data comes from
+
+In a real PMO the data is spread across systems: delivery work lives in Jira, budgets come from Finance, the risk register is a spreadsheet the PMs keep, and people data comes from HR. ProjectPulse takes one workbook per data owner. Jira is assumed to sync into its workbook (or you drop in Jira's CSV export).
+
+| Workbook | Sheets | Maintained by | Typical refresh |
+|---|---|---|---|
+| `jira_export.xlsx` | **Issues**, **Sprints** | Jira sync / export | Nightly |
+| `pmo_portfolio.xlsx` | **Projects**, **Risks** (RAID log), Ceremonies, Archive | PMO, project managers, scrum masters | Weekly |
+| `hr_resources.xlsx` | **Employees**, Peer Reviews | HR, team leads | Monthly |
+
+Bold sheets are required. Blank templates are in `templates/` and on the Data Import page. Each has an *Instructions* tab listing every column, whether it is required and its allowed values, with drop-downs for the fixed lists.
+
+**How the import works**
+
+1. **Sheets link by name, as real exports do.** Issues name their project, sprint and assignee; risks name their owner. Database IDs are assigned during import.
+2. **Jira's vocabulary is understood.** `Closed`/`Resolved` → Done, `User Story` → Story, `Highest`/`Blocker` → Critical, and so on. A CSV is recognised by its headers, whatever the file is called.
+3. **Every row is validated before anything changes:** required fields, dates, Fibonacci story points, 1–5 risk scales, unknown names, a Done issue without a Resolved date, sprints that belong to another project. Each problem is reported with file, sheet, row and column.
+4. **Derived numbers are computed, not typed.** Risk score = probability × impact; sprint committed/completed points and per-person sprint performance are counted from the issues.
+5. **One transaction.** All tables are replaced together. If the database rejects anything, nothing changes. Every load is written to `data_imports`, and the delay model retrains.
+
+Optional sheets: without *Ceremonies* the attendance charts are empty; without *Peer Reviews* the performance score uses the other three components; without *Archive* the existing model-training history is kept.
+
+---
+
 ## Metric definitions
 
 | Metric | Formula |
@@ -256,7 +287,7 @@ docker compose up --build
 # open http://localhost:8501
 ```
 
-The app container generates the data, loads PostgreSQL, trains the model and starts Streamlit.
+On first start the app container generates demo data, loads PostgreSQL, trains the model and starts Streamlit. Later starts keep whatever data is there.
 
 ### Option B: local PostgreSQL
 
@@ -289,7 +320,10 @@ pip install -r requirements.txt && streamlit run app.py
 python scripts/generate_data.py --out data/      # export all tables to CSV
 python scripts/train_model.py                    # retrain and print model report
 psql "$DATABASE_URL" -f sql/03_sample_queries.sql
-pytest -q                                        # 36 tests
+python scripts/make_templates.py --sample        # templates/ + filled samples in data/sample/
+python scripts/import_excel.py data/sample/*.xlsx --dry-run   # validate only
+python scripts/import_excel.py data/sample/*.xlsx             # validate and load
+pytest -q                                        # 48 tests
 ```
 
 ---
@@ -303,9 +337,9 @@ pytest -q                                        # 36 tests
 4. On share.streamlit.io, create an app from `app.py`. Under **Settings → Secrets**, add `DATABASE_URL = "<connection-string>"`. Streamlit exposes secrets as environment variables.
 5. Deploy. The model trains on first load if `models/delay_model.joblib` is missing.
 
-**Render / Railway / Fly.io:** deploy the `Dockerfile` as a web service, attach a PostgreSQL add-on and set `DATABASE_URL`. The container runs `scripts/load_data.py` on start. Remove that step from `CMD` once the data is loaded if you want to keep data between restarts.
+**Render / Railway / Fly.io:** deploy the `Dockerfile` as a web service, attach a PostgreSQL add-on and set `DATABASE_URL`. On start the container loads demo data only if the database is empty (`load_data.py --if-empty`), so imported spreadsheets survive restarts.
 
-**Production notes:** make `DATABASE_URL` a read-only role for the app and a separate role for loading. Put the app behind SSO with Streamlit's `st.login` or a reverse proxy. Swap the synthetic generator for a Jira REST extract that lands in the same schema.
+**Production notes:** make `DATABASE_URL` a read-only role for the app and a separate role for loading. Put the app behind SSO with Streamlit's `st.login` or a reverse proxy. Feed real data through the Data Import page or `scripts/import_excel.py` (see *Where the data comes from*).
 
 ---
 
@@ -318,4 +352,4 @@ pytest -q                                        # 36 tests
 
 ---
 
-*Synthetic data only. TechNova Solutions and every person and project in this data set are fictional.*
+*Synthetic data only. The company and every person and project in this data set are fictional.*

@@ -26,7 +26,6 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL", f"sqlite:///{(ROOT_DIR / 'projectpulse.db').as_posix()}"
 )
 
-COMPANY_NAME = "TechNova Solutions"
 APP_NAME = "ProjectPulse"
 
 # Reproducibility of the synthetic data set.

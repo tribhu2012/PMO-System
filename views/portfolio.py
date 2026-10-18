@@ -9,7 +9,7 @@ import streamlit as st
 from projectpulse import config
 from projectpulse.ui import components as ui
 from projectpulse.ui import state
-from projectpulse.ui.theme import GRID, INK, RAG_COLORS, RAG_EMOJI, RAG_ICONS, SERIES
+from projectpulse.ui.theme import GRID, INK, PLANNED, RAG_COLORS, RAG_EMOJI, RAG_ICONS, SERIES
 
 ctx = state.get_ctx()
 pm = ctx.pm
@@ -20,21 +20,27 @@ if pm.empty:
     st.stop()
 
 counts = pm.rag.value_counts()
+act = pm[pm.status_as_of != "Completed"]
+red = act[act.rag == "Red"].sort_values("health_score")
+parts = {"schedule": act.schedule_health.mean(), "budget": act.budget_health.mean(),
+         "risk": act.risk_health.mean()}
+weakest = min(parts, key=parts.get) if len(act) else None
+lead = (f"<b>{len(red)} of {len(act)} active projects are Red</b> "
+        f"({', '.join(red.project_name.str.replace('Project ', ''))})" if len(red)
+        else f"<b>No active project is Red</b> ({len(act)} active)")
+ui.headline(lead + (f". The weakest part of the health score is <b>{weakest}</b> "
+                    f"(average {parts[weakest]:.0f} of 100)." if weakest else "."),
+            tone="bad" if len(red) else "good")
 ui.kpi_grid([
-    dict(label="Projects", value=f"{len(pm)}", icon="folder_copy",
-         sub=f"{ui.fmt_money(pm.budget.sum())} total budget"),
     dict(label="Green", value=f"{counts.get('Green', 0)}", icon="check_circle", tone="good",
-         badge=ui.rag_chip("Green"), sub=f"Health ≥ {config.HEALTH_GREEN}"),
+         sub=f"Health ≥ {config.HEALTH_GREEN}"),
     dict(label="Yellow", value=f"{counts.get('Yellow', 0)}", icon="error", tone="warn",
-         badge=ui.rag_chip("Yellow"), sub=f"Health {config.HEALTH_YELLOW}–{config.HEALTH_GREEN - 1}"),
+         sub=f"Health {config.HEALTH_YELLOW}–{config.HEALTH_GREEN - 1}"),
     dict(label="Red", value=f"{counts.get('Red', 0)}", icon="report", tone="bad",
-         badge=ui.rag_chip("Red"), sub=f"Health < {config.HEALTH_YELLOW}"),
+         sub=f"Health < {config.HEALTH_YELLOW}"),
     dict(label="Cost Variance", value=ui.fmt_money(pm.cost_variance.sum()), icon="payments",
          tone="bad" if pm.cost_variance.sum() < 0 else "good",
-         sub="EV − AC · negative means over budget"),
-    dict(label="Schedule Variance", value=ui.fmt_money(pm.schedule_variance.sum()), icon="event_busy",
-         tone="bad" if pm.schedule_variance.sum() < 0 else "good",
-         sub="EV − PV · negative means behind plan"),
+         sub=f"EV − AC · schedule variance {ui.fmt_money(pm.schedule_variance.sum())}"),
 ])
 
 # --------------------------------------------------------------------------- register
@@ -79,9 +85,66 @@ with ui.card("register"):
                           for r in mismatch.itertuples())
         ui.note(f"ⓘ Reported status differs from the metrics for {names}.")
 
+# --------------------------------------------------------------------------- drill-down
+with ui.card("drilldown"):
+    ctrl = ui.card_header("Project Drill-down", "Earned value, forecast and timeline for a single project",
+                          controls=0.3)
+    names = pm.sort_values("health_score").project_name.tolist()
+    pick = ctrl.selectbox("Project", names, key="portfolio_pick", label_visibility="collapsed")
+    r = pm[pm.project_name == pick].iloc[0]
+
+    st.markdown(
+        f"<div class='pp-legend'><span>{ui.rag_chip(r.rag)} <b>Health {r.health_score:.0f}</b></span>"
+        f"<span>{r.description}</span><span>PM <b>{r.project_manager}</b></span>"
+        f"<span>{r.department}</span><span>Priority {r.priority}</span></div>",
+        unsafe_allow_html=True)
+    cols = st.columns(8)
+    for col, (label, val) in zip(cols, [
+        ("Planned Value", ui.fmt_money(r.pv)), ("Earned Value", ui.fmt_money(r.ev)),
+        ("Actual Cost", ui.fmt_money(r.ac)), ("SPI", f"{r.spi:.2f}"), ("CPI", f"{r.cpi:.2f}"),
+        ("EAC", ui.fmt_money(r.eac)), ("VAC", ui.fmt_money(r.vac)),
+        ("Forecast finish", f"{r.forecast_end:%b %Y}"),
+    ]):
+        col.metric(label, val)
+
+    c1, c2 = st.columns([3, 2], gap="large")
+    with c1:
+        fig = go.Figure()
+        rows = [("Planned", r.start_date, r.planned_end_date, PLANNED),
+                ("Actual" if r.completed_as_of else "Forecast", r.start_date, r.forecast_end,
+                 RAG_COLORS[r.rag])]
+        for label, s, e, color in rows:
+            fig.add_bar(y=[label], x=[(e - s).days * 86400000], base=[s], orientation="h",
+                        marker=dict(color=color), name=label, width=0.5,
+                        hovertemplate=f"{label}: {s:%d %b %Y} → {e:%d %b %Y}<extra></extra>")
+        fig.add_vline(x=ctx.f.end.timestamp() * 1000, line=dict(color=INK["primary"], width=1, dash="dot"))
+        fig.add_annotation(x=ctx.f.end, y=1.1, yref="paper", text="as of", showarrow=False,
+                           font=dict(size=11, color=INK["secondary"]))
+        sp = ctx.data["sprints"]
+        sp = sp[(sp.project_id == r.project_id) & (sp.start_date <= ctx.f.end)]
+        fig.add_scatter(x=sp.start_date, y=["Sprints"] * len(sp), mode="markers", name="Sprint start",
+                        marker=dict(symbol="line-ns", size=14, line=dict(width=2, color=SERIES[6])),
+                        text=sp.sprint_name, hovertemplate="%{text}<br>%{x|%d %b %Y}<extra></extra>")
+        fig.update_layout(xaxis=dict(type="date", showgrid=True, gridcolor=GRID), showlegend=False,
+                          yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
+                          title=dict(text="Timeline"))
+        ui.chart(fig, height=230, key="timeline")
+    with c2:
+        labels = ["Schedule", "Budget", "Risk"]
+        vals = [r.schedule_health, r.budget_health, r.risk_health]
+        fig = go.Figure(go.Bar(
+            x=vals, y=labels, orientation="h", marker_color=SERIES[:3], width=0.55,
+            text=[f"{v:.0f}" for v in vals], textposition="outside", cliponaxis=False,
+            hovertemplate="%{y} health %{x:.0f}<extra></extra>"))
+        fig.update_layout(xaxis=dict(range=[0, 112], visible=False),
+                          yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
+                          title=dict(text="Health components (0–100)"))
+        ui.chart(fig, height=230, key="components")
+
 # --------------------------------------------------------------------------- charts
 H = 420
-c1, c2 = ui.row(2)
+det = ui.details("Show details: health composition and SPI × CPI quadrant")
+c1, c2 = ui.row(2, parent=det)
 with c1, ui.card("composition"):
     ui.card_header("Health Score Composition", "Weighted contribution of each component (max 100)")
     t = pm.sort_values("health_score")
@@ -132,59 +195,3 @@ with c2, ui.card("quadrant"):
     fig.update_layout(xaxis=dict(title="SPI (schedule)", range=[lo, hi], showgrid=True, gridcolor=GRID),
                       yaxis=dict(title="CPI (cost)", range=[lo, hi]))
     ui.chart(fig, height=H, key="spi_cpi")
-
-# --------------------------------------------------------------------------- drill-down
-with ui.card("drilldown"):
-    ctrl = ui.card_header("Project Drill-down", "Earned value, forecast and timeline for a single project",
-                          controls=0.3)
-    names = pm.sort_values("health_score").project_name.tolist()
-    pick = ctrl.selectbox("Project", names, key="portfolio_pick", label_visibility="collapsed")
-    r = pm[pm.project_name == pick].iloc[0]
-
-    st.markdown(
-        f"<div class='pp-legend'><span>{ui.rag_chip(r.rag)} <b>Health {r.health_score:.0f}</b></span>"
-        f"<span>{r.description}</span><span>PM <b>{r.project_manager}</b></span>"
-        f"<span>{r.department}</span><span>Priority {r.priority}</span></div>",
-        unsafe_allow_html=True)
-    cols = st.columns(8)
-    for col, (label, val) in zip(cols, [
-        ("Planned Value", ui.fmt_money(r.pv)), ("Earned Value", ui.fmt_money(r.ev)),
-        ("Actual Cost", ui.fmt_money(r.ac)), ("SPI", f"{r.spi:.2f}"), ("CPI", f"{r.cpi:.2f}"),
-        ("EAC", ui.fmt_money(r.eac)), ("VAC", ui.fmt_money(r.vac)),
-        ("Forecast finish", f"{r.forecast_end:%b %Y}"),
-    ]):
-        col.metric(label, val)
-
-    c1, c2 = st.columns([3, 2], gap="large")
-    with c1:
-        fig = go.Figure()
-        rows = [("Planned", r.start_date, r.planned_end_date, "#b7d3f6"),
-                ("Actual" if r.completed_as_of else "Forecast", r.start_date, r.forecast_end,
-                 RAG_COLORS[r.rag])]
-        for label, s, e, color in rows:
-            fig.add_bar(y=[label], x=[(e - s).days * 86400000], base=[s], orientation="h",
-                        marker=dict(color=color), name=label, width=0.5,
-                        hovertemplate=f"{label}: {s:%d %b %Y} → {e:%d %b %Y}<extra></extra>")
-        fig.add_vline(x=ctx.f.end.timestamp() * 1000, line=dict(color=INK["primary"], width=1, dash="dot"))
-        fig.add_annotation(x=ctx.f.end, y=1.1, yref="paper", text="as of", showarrow=False,
-                           font=dict(size=11, color=INK["secondary"]))
-        sp = ctx.data["sprints"]
-        sp = sp[(sp.project_id == r.project_id) & (sp.start_date <= ctx.f.end)]
-        fig.add_scatter(x=sp.start_date, y=["Sprints"] * len(sp), mode="markers", name="Sprint start",
-                        marker=dict(symbol="line-ns", size=14, line=dict(width=2, color=SERIES[6])),
-                        text=sp.sprint_name, hovertemplate="%{text}<br>%{x|%d %b %Y}<extra></extra>")
-        fig.update_layout(xaxis=dict(type="date", showgrid=True, gridcolor=GRID), showlegend=False,
-                          yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
-                          title=dict(text="Timeline"))
-        ui.chart(fig, height=230, key="timeline")
-    with c2:
-        labels = ["Schedule", "Budget", "Risk"]
-        vals = [r.schedule_health, r.budget_health, r.risk_health]
-        fig = go.Figure(go.Bar(
-            x=vals, y=labels, orientation="h", marker_color=SERIES[:3], width=0.55,
-            text=[f"{v:.0f}" for v in vals], textposition="outside", cliponaxis=False,
-            hovertemplate="%{y} health %{x:.0f}<extra></extra>"))
-        fig.update_layout(xaxis=dict(range=[0, 112], visible=False),
-                          yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"),
-                          title=dict(text="Health components (0–100)"))
-        ui.chart(fig, height=230, key="components")

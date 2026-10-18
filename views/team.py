@@ -22,18 +22,25 @@ if perf.empty:
 w = config.PERFORMANCE_WEIGHTS
 totals = perf[["tasks_assigned", "tasks_completed", "on_time", "story_points_delivered",
                "bugs_reopened", "stories_completed"]].sum()
+dept = perf.groupby("department").agg(
+    score=("performance_score", "mean"), completion=("task_completion_rate", "mean"),
+    on_time=("on_time_rate", "mean"), defect=("defect_rate", "mean"),
+    peer=("peer_review_score", "mean"), people=("employee_id", "count")).reset_index()
+dept = dept.sort_values("score", ascending=False)
+completion = totals.tasks_completed / max(totals.tasks_assigned, 1)
+on_time = totals.on_time / max(totals.tasks_completed, 1)
+ui.headline(f"People complete <b>{completion:.0%}</b> of their sprint tasks and <b>{on_time:.0%}</b> on time"
+            + (f". Strongest department: <b>{dept.department.iloc[0]}</b> ({dept.score.iloc[0]:.0f}); "
+               f"weakest: <b>{dept.department.iloc[-1]}</b> ({dept.score.iloc[-1]:.0f})." if len(dept) > 1 else "."),
+            icon="military_tech")
 ui.kpi_grid([
     dict(label="Task Completion Rate", value=ui.fmt_pct(totals.tasks_completed / totals.tasks_assigned),
          icon="task_alt", tone="good",
          sub=f"{int(totals.tasks_completed):,} of {int(totals.tasks_assigned):,} sprint tasks"),
-    dict(label="Story Points Delivered", value=f"{int(totals.story_points_delivered):,}", icon="bolt",
-         sub=f"{perf.story_points_delivered.mean():.0f} SP per person"),
     dict(label="On-Time Delivery", value=ui.fmt_pct(totals.on_time / max(totals.tasks_completed, 1)),
          icon="event_available", sub="Done on or before sprint end"),
     dict(label="Defect Rate", value=ui.fmt_pct(totals.bugs_reopened / max(totals.stories_completed, 1), 1),
          icon="bug_report", tone="warn", sub=f"{int(totals.bugs_reopened)} bugs reopened"),
-    dict(label="Peer Review Score", value=f"{perf.peer_review_score.mean():.2f}", icon="reviews",
-         tone="violet", sub="Average out of 5 across sprints"),
     dict(label="Performance Score", value=f"{perf.performance_score.mean():.0f}", icon="military_tech",
          sub=f"{(perf.performance_score >= 85).sum()} people at 85 or above"),
 ])
@@ -66,7 +73,20 @@ with c1, ui.card("top"):
                       yaxis=dict(gridcolor="rgba(0,0,0,0)"))
     ui.chart(fig, height=H, key="top_perf")
 
-with c2, ui.card("dist"):
+with c2, ui.card("dept_chart"):
+    ui.card_header("Department Comparison", "Average performance score per department")
+    fig = go.Figure(go.Bar(
+        y=dept.department, x=dept.score, orientation="h", marker_color=SERIES[0], width=0.55,
+        text=dept.score.round(0), textposition="outside", cliponaxis=False, customdata=dept.people,
+        hovertemplate="%{y}<br>Avg score %{x:.1f} · %{customdata} people<extra></extra>"))
+    fig.update_layout(xaxis=dict(range=[0, 108], showgrid=True, gridcolor=GRID),
+                      yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"), margin=dict(t=8))
+    ui.chart(fig, height=H, key="dept_score")
+# --------------------------------------------------------------------------- details
+det = ui.details("Show details: score distribution, department KPIs and full ranking")
+H2 = 300
+c1, c2 = ui.row([1, 1], parent=det)
+with c1, ui.card("dist"):
     ui.card_header("Performance Distribution", "Number of people per 4-point score band")
     fig = go.Figure(go.Histogram(
         x=perf.performance_score, xbins=dict(start=40, end=100, size=4), marker_color=SERIES[0],
@@ -77,24 +97,8 @@ with c2, ui.card("dist"):
     fig.add_annotation(x=med, y=1.03, yref="paper", text=f"median {med:.0f}", showarrow=False,
                        font=dict(size=11, color=INK["secondary"]))
     fig.update_layout(xaxis_title="Performance score", yaxis_title="People", bargap=0.04)
-    ui.chart(fig, height=H, key="dist")
+    ui.chart(fig, height=H2, key="dist")
 
-dept = perf.groupby("department").agg(
-    score=("performance_score", "mean"), completion=("task_completion_rate", "mean"),
-    on_time=("on_time_rate", "mean"), defect=("defect_rate", "mean"),
-    peer=("peer_review_score", "mean"), people=("employee_id", "count")).reset_index()
-dept = dept.sort_values("score", ascending=False)
-H2 = 260
-c1, c2 = ui.row([1, 1])
-with c1, ui.card("dept_chart"):
-    ui.card_header("Department Comparison", "Average performance score per department")
-    fig = go.Figure(go.Bar(
-        y=dept.department, x=dept.score, orientation="h", marker_color=SERIES[0], width=0.55,
-        text=dept.score.round(0), textposition="outside", cliponaxis=False, customdata=dept.people,
-        hovertemplate="%{y}<br>Avg score %{x:.1f} · %{customdata} people<extra></extra>"))
-    fig.update_layout(xaxis=dict(range=[0, 108], showgrid=True, gridcolor=GRID),
-                      yaxis=dict(autorange="reversed", gridcolor="rgba(0,0,0,0)"), margin=dict(t=8))
-    ui.chart(fig, height=H2, key="dept_score")
 with c2, ui.card("dept_table"):
     ui.card_header("Department KPIs", "Averages across people in scope")
     tbl = dept.assign(completion=dept.completion * 100, on_time=dept.on_time * 100, defect=dept.defect * 100)
@@ -107,8 +111,7 @@ with c2, ui.card("dept_table"):
         "peer": st.column_config.NumberColumn("Peer", format="%.2f"),
     })
 
-# --------------------------------------------------------------------------- ranking
-with ui.card("ranking"):
+with det, ui.card("ranking"):
     ctrl = ui.card_header("Employee Ranking", "All people in scope, ranked by performance score", controls=0.18)
     view = perf.assign(
         band=perf.performance_score.map(metrics.performance_band),

@@ -4,6 +4,7 @@ Usage:
     python scripts/load_data.py                       # uses DATABASE_URL
     python scripts/load_data.py --database-url postgresql://user:pw@localhost:5432/projectpulse
     python scripts/load_data.py --skip-model
+    python scripts/load_data.py --if-empty       # only when there is no data yet (Docker start-up)
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import _bootstrap  # noqa: F401
 
 from projectpulse import config, ml
 from projectpulse.data_generator import generate_dataset
-from projectpulse.database import create_schema, create_views, get_engine, load_tables, read_all
+from projectpulse.database import database_ready, get_engine, read_all, record_import, replace_all
 
 
 def main() -> None:
@@ -24,19 +25,23 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=config.RANDOM_SEED)
     parser.add_argument("--as-of", default=config.DATA_AS_OF)
     parser.add_argument("--skip-model", action="store_true", help="do not train the ML model")
+    parser.add_argument("--if-empty", action="store_true",
+                        help="do nothing if the database already has data (keeps imported spreadsheets)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     engine = get_engine(args.database_url)
     print(f"Target database: {engine.url.render_as_string(hide_password=True)} ({engine.dialect.name})")
+    if args.if_empty and database_ready(engine):
+        print("Database already has data; nothing to do (--if-empty).")
+        return
 
     t0 = time.perf_counter()
     tables = generate_dataset(seed=args.seed, as_of=args.as_of)
     print(f"Generated data in {time.perf_counter() - t0:.1f}s")
 
-    create_schema(engine)
-    counts = load_tables(engine, tables)
-    create_views(engine)
+    counts = replace_all(engine, tables)
+    record_import(engine, "synthetic", counts, data_as_of=args.as_of)
     print("Loaded: " + ", ".join(f"{k}={v:,}" for k, v in counts.items()))
 
     if not args.skip_model:

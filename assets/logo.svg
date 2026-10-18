@@ -1,7 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="240" height="48" viewBox="0 0 240 48">
-  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a78d6"/><stop offset="1" stop-color="#6250d6"/></linearGradient></defs>
-  <rect x="2" y="6" width="36" height="36" rx="10" fill="url(#g)"/>
-  <polyline points="8,26 15,26 18,17 23,33 27,22 32,22" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="48" y="25" font-family="Inter,system-ui,-apple-system,Segoe UI,sans-serif" font-size="18.5" font-weight="700" fill="#111827">ProjectPulse</text>
-  <text x="48" y="40" font-family="Inter,system-ui,-apple-system,Segoe UI,sans-serif" font-size="10.5" fill="#6b7280">TechNova Solutions · PMO</text>
+  <rect x="2" y="8" width="32" height="32" rx="4" fill="#1f3a5c"/>
+  <polyline points="7,25 13,25 16,17 21,32 24,22 29,22" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="square" stroke-linejoin="miter"/>
+  <text x="44" y="25" font-family="'Source Serif 4','Source Serif Pro',Georgia,serif" font-size="20" font-weight="600" fill="#15191f">ProjectPulse</text>
+  <text x="44" y="39" font-family="'Public Sans',system-ui,-apple-system,'Segoe UI',sans-serif" font-size="10.5" fill="#7d838d">PMO Analytics</text>
 </svg>

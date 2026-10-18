@@ -2,8 +2,10 @@
 
 Layout rules
 ------------
-* Every page opens with ``page_header`` and a ``kpi_grid`` of exactly six cards,
-  so KPI cards have the same width and height on every page.
+* Every page opens with ``page_header``, a one-sentence ``headline`` (the answer
+  first) and a ``kpi_grid`` of four cards: the numbers a stakeholder needs.
+* Secondary charts go inside ``details()``, collapsed by default. The sidebar's
+  "Analyst view" switch expands them all.
 * Content lives in ``card`` containers. Cards placed in the same ``row`` stretch
   to equal height; charts that sit side by side use the same plot height.
 """
@@ -28,44 +30,40 @@ PLOTLY_CONFIG = {
 
 CHIP_CLASS = {"good": "pp-good", "warn": "pp-warn", "bad": "pp-bad", "neutral": "pp-neutral"}
 RAG_KIND = {"Green": "good", "Yellow": "warn", "Red": "bad", "Grey": "neutral"}
-TONES = {"accent": "", "good": "pp-tone-good", "warn": "pp-tone-warn", "bad": "pp-tone-bad",
+TONES = {"accent": "pp-tone-accent", "good": "pp-tone-good", "warn": "pp-tone-warn", "bad": "pp-tone-bad",
          "violet": "pp-tone-violet"}
-
-
-def _icon(name: str) -> str:
-    """Material Symbols ligature (font ships with Streamlit)."""
-    return f"<span class='pp-ms' aria-hidden='true'>{name}</span>"
 
 
 # --------------------------------------------------------------------------- header
 def page_header(title: str, subtitle: str, eyebrow: str = "", ctx=None, note: str = "") -> None:
-    """Title block plus pills summarising the active filters (so users always know the scope)."""
-    pills = []
+    """Title block, with the active filter scope as a plain line of text on the right.
+
+    ``eyebrow`` is accepted for compatibility; the sidebar already shows the section.
+    """
+    scope = []
     if ctx is not None:
         f = ctx.f
-        pills.append(f"<span class='pp-pill'>{_icon('calendar_month')}<b>{f.start:%d %b %Y}</b>"
-                     f"– <b>{f.end:%d %b %Y}</b></span>")
-        dept = "All departments" if f.dept_all else ", ".join(f.departments)
-        pills.append(f"<span class='pp-pill'>{_icon('apartment')}{html.escape(dept)}</span>")
-        proj = ("All projects" if not f.project_labels else
-                (f.project_labels[0].replace("Project ", "") if len(f.project_labels) == 1
-                 else f"{len(f.project_labels)} projects"))
-        pills.append(f"<span class='pp-pill'>{_icon('folder')}{html.escape(proj)}</span>")
+        scope.append(f"<b>{f.start:%d %b %Y} – {f.end:%d %b %Y}</b>")
+        scope.append(html.escape("All departments" if f.dept_all else ", ".join(f.departments)))
+        scope.append(html.escape(
+            "All projects" if not f.project_labels else
+            (f.project_labels[0].replace("Project ", "") if len(f.project_labels) == 1
+             else f"{len(f.project_labels)} projects")))
     if note:
-        pills.append(f"<span class='pp-pill'>{_icon('info')}{note}</span>")
+        scope.append(note)
+    sep = "<span class='pp-sep'>|</span>"
     st.markdown(
         f"""<div class="pp-header"><div>
-        {f'<div class="pp-eyebrow">{html.escape(eyebrow)}</div>' if eyebrow else ''}
         <div class="pp-title">{html.escape(title)}</div>
         <div class="pp-subtitle">{html.escape(subtitle)}</div></div>
-        <div class="pp-context">{''.join(pills)}</div></div>""",
+        <div class="pp-context">{sep.join(scope)}</div></div>""",
         unsafe_allow_html=True,
     )
 
 
 # --------------------------------------------------------------------------- KPIs
 def chip(text: str, kind: str = "neutral", icon: str = "") -> str:
-    icon_html = f"<span aria-hidden='true'>{icon}</span>" if icon else ""
+    icon_html = f"<span aria-hidden='true'>{icon}</span>" if icon else ""  # shape keeps status readable without colour
     return f"<span class='pp-chip {CHIP_CLASS[kind]}'>{icon_html}{html.escape(text)}</span>"
 
 
@@ -75,17 +73,24 @@ def rag_chip(rag: str) -> str:
 
 def kpi_card(label: str, value: str, sub: str = "", badge: str = "", help: str = "",
              icon: str = "monitoring", tone: str = "accent") -> str:
+    """``icon`` is accepted for compatibility; cards carry a small status square instead."""
     title = f" title='{html.escape(help)}'" if help else ""
-    return (f"<div class='pp-kpi {TONES.get(tone, '')}'{title}>"
-            f"<div class='pp-kpi-top'><div class='pp-kpi-icon'>{_icon(icon)}</div>"
-            f"<div class='pp-kpi-label'>{html.escape(label)}</div></div>"
+    return (f"<div class='pp-kpi {TONES.get(tone, 'pp-tone-accent')}'{title}>"
+            f"<div class='pp-kpi-label'><span class='pp-dot'></span>{html.escape(label)}</div>"
             f"<div class='pp-kpi-value'><span>{value}</span>{badge}</div>"
             f"<div class='pp-kpi-sub'>{sub}</div></div>")
 
 
 def kpi_grid(cards: Sequence[dict]) -> None:
-    """Render KPI cards in one CSS grid (6 columns desktop, 3 tablet, 2 phone)."""
-    st.markdown("<div class='pp-kpis'>" + "".join(kpi_card(**c) for c in cards) + "</div>",
+    """Render KPI cards in one CSS grid (one column per card on desktop, 2 on tablet and phone)."""
+    st.markdown(f"<div class='pp-kpis pp-kpis-{len(cards)}'>" + "".join(kpi_card(**c) for c in cards)
+                + "</div>", unsafe_allow_html=True)
+
+
+def headline(text: str, tone: str = "neutral", icon: str = "lightbulb") -> None:
+    """The page's takeaway in one sentence, shown above the numbers. ``text`` may contain <b>.
+    The square takes the tone's colour; ``icon`` is accepted for compatibility."""
+    st.markdown(f"<div class='pp-headline pp-hl-{tone}'><span class='pp-mark'></span><div>{text}</div></div>",
                 unsafe_allow_html=True)
 
 
@@ -93,9 +98,15 @@ kpi_row = kpi_grid  # backwards-compatible name
 
 
 # --------------------------------------------------------------------------- cards
-def row(spec=2, gap: str = "medium"):
+def row(spec=2, gap: str = "medium", parent=None):
     """Columns for a row of cards (cards inside stretch to equal height)."""
-    return st.columns(spec, gap=gap)
+    return (parent or st).columns(spec, gap=gap)
+
+
+def details(label: str = "Show details"):
+    """Collapsed section for secondary charts; open when the sidebar's Analyst view is on."""
+    return st.expander(label, expanded=bool(st.session_state.get("analyst_view")),
+                       icon=":material/unfold_more:")
 
 
 @contextmanager

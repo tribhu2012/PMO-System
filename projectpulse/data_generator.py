@@ -1,4 +1,4 @@
-"""Synthetic Jira-style data generator for TechNova Solutions.
+"""Synthetic Jira-style data generator for a fictional 75-person company.
 
 Design principles
 -----------------
@@ -275,8 +275,8 @@ def _days(n: float) -> pd.Timedelta:
     return pd.Timedelta(days=int(round(n)))
 
 
-class TechNovaGenerator:
-    """Builds the full TechNova Solutions data set as pandas DataFrames."""
+class PortfolioGenerator:
+    """Builds the full synthetic data set as pandas DataFrames."""
 
     def __init__(self, seed: int = config.RANDOM_SEED, as_of: str = config.DATA_AS_OF):
         self.rng = np.random.default_rng(seed)
@@ -866,5 +866,5 @@ class TechNovaGenerator:
 def generate_dataset(seed: int = config.RANDOM_SEED, as_of: str = config.DATA_AS_OF
                      ) -> dict[str, pd.DataFrame]:
     """Convenience wrapper: build every table and return ``{table_name: DataFrame}``."""
-    gen = TechNovaGenerator(seed=seed, as_of=as_of)
+    gen = PortfolioGenerator(seed=seed, as_of=as_of)
     return gen.generate()

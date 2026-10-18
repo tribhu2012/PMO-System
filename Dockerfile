@@ -10,5 +10,5 @@ COPY . .
 EXPOSE 8501
 HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"
 
-# Load data on first start (idempotent rebuild), then serve the dashboard.
-CMD ["sh", "-c", "python scripts/load_data.py && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"]
+# Load demo data only if the database is empty (imported spreadsheets survive restarts).
+CMD ["sh", "-c", "python scripts/load_data.py --if-empty && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"]

@@ -1,6 +1,6 @@
 -- =============================================================================
 -- ProjectPulse - PostgreSQL schema
--- Project Portfolio Management & Agile Analytics Platform (TechNova Solutions)
+-- Project Portfolio Management & Agile Analytics Platform
 --
 -- Run:  psql "$DATABASE_URL" -f sql/01_schema.sql
 -- The loader (scripts/load_data.py) executes this file automatically.
@@ -151,7 +151,7 @@ CREATE TABLE performance (
     stories_completed       INTEGER      NOT NULL,
     story_points_completed  INTEGER      NOT NULL,
     bugs_reopened           INTEGER      NOT NULL,
-    peer_review_score       NUMERIC(3,1) NOT NULL,
+    peer_review_score       NUMERIC(3,1),             -- ext: nullable for imported sheets
     PRIMARY KEY (employee_id, sprint_id),
     CONSTRAINT ck_perf_stories CHECK (stories_completed <= stories_assigned),
     CONSTRAINT ck_perf_peer    CHECK (peer_review_score BETWEEN 1 AND 5)
@@ -172,4 +172,16 @@ CREATE TABLE project_history (
     sprint_velocity           DOUBLE PRECISION NOT NULL,  -- avg completed SP, last 3 sprints
     tasks_remaining           INTEGER          NOT NULL,
     delayed                   INTEGER          NOT NULL   -- 1 = finished after planned end
+);
+
+-- -----------------------------------------------------------------------------
+-- data_imports (ext) - audit log of every load. Not dropped on rebuild.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS data_imports (
+    import_id    SERIAL       PRIMARY KEY,
+    imported_at  TIMESTAMP    NOT NULL,
+    source       VARCHAR(40)  NOT NULL,                -- 'spreadsheet' / 'synthetic'
+    files        TEXT,
+    row_counts   TEXT         NOT NULL,                -- JSON {table: rows}
+    data_as_of   DATE
 );

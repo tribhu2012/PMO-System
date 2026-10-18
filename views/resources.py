@@ -26,6 +26,13 @@ over = util[util.utilization > config.OVERLOAD_THRESHOLD]
 under = util[(util.utilization < config.UNDERUTILISED_THRESHOLD) & (util.assigned_hours > 0)]
 bench = util[util.assigned_hours == 0]
 
+spare = len(under) + len(bench)
+hot = over.department.value_counts()
+ui.headline((f"<b>{len(over)} people are above 100% capacity</b>"
+             + (f", mostly in {hot.index[0]} ({hot.iloc[0]})" if len(hot) else "")
+             if len(over) else "<b>Nobody is above 100% capacity</b>")
+            + f". <b>{spare}</b> {'have' if spare != 1 else 'has'} spare capacity to take on work.",
+            tone="bad" if len(over) else "good", icon="groups")
 ui.kpi_grid([
     dict(label="Average Utilization", value=ui.fmt_pct(avg_util), icon="speed",
          sub=f"{len(allocated)} allocated of {len(util)} delivery staff",
@@ -40,41 +47,7 @@ ui.kpi_grid([
          sub="Allocated but below target"),
     dict(label="On the Bench", value=f"{len(bench)}", icon="event_seat", tone="violet",
          sub="No sprint work in the period"),
-    dict(label="Capacity (period)", value=f"{util.capacity_hours.sum() / 1000:,.1f}k h", icon="schedule",
-         sub=f"{util.assigned_hours.sum() / 1000:,.1f}k h assigned"),
-    dict(label="Avg Projects / Person", value=f"{allocated.projects.mean():.1f}" if len(allocated) else "–",
-         icon="account_tree", sub=f"{(allocated.projects > 1).sum()} people split across projects"),
 ])
-
-# --------------------------------------------------------------------------- heatmap
-with ui.card("heatmap"):
-    ctrl = ui.card_header("Workload Heatmap",
-                          "Monthly utilisation per person · grey ≈ 90% target · red = overloaded · "
-                          "blue = spare capacity · blank = unassigned", controls=0.26)
-    dept_pick = ctrl.selectbox("Department", ["All departments"] + sorted(staff.department.unique()),
-                               key="heat_dept", label_visibility="collapsed")
-    monthly = metrics.utilisation_by_month(ctx.daily, staff, ctx.f.start, ctx.f.end)
-    people = staff if dept_pick == "All departments" else staff[staff.department == dept_pick]
-    months = pd.period_range(ctx.f.start, ctx.f.end, freq="M").to_timestamp()
-    mat = (monthly[monthly.employee_id.isin(people.employee_id)]
-           .pivot_table(index="employee_id", columns="month", values="utilization", aggfunc="sum")
-           .reindex(index=people.employee_id, columns=months).fillna(0.0))
-    order = mat.mean(axis=1).sort_values(ascending=False).index
-    mat = mat.loc[order]
-    names = people.set_index("employee_id").loc[order]
-    labels = [f"{n} · {d[:3]}" for n, d in zip(names.employee_name, names.department)]
-    z = (mat.values * 100).round(0)
-    z[z == 0] = float("nan")
-    fig = go.Figure(go.Heatmap(
-        z=z, x=[m.strftime("%b %y") for m in months], y=labels,
-        colorscale=DIVERGING, zmin=30, zmax=150, zmid=90, xgap=2, ygap=2,
-        colorbar=dict(title=dict(text="Util %", font=dict(size=11)), ticksuffix="%", len=0.5, y=0.75),
-        hovertemplate="%{y}<br>%{x}: %{z:.0f}%<extra></extra>"))
-    fig.update_layout(yaxis=dict(autorange="reversed", tickfont=dict(size=10.5), gridcolor="rgba(0,0,0,0)"),
-                      xaxis=dict(side="top"), margin=dict(t=24))
-    with st.container(height=480, border=False):
-        ui.chart(fig, height=max(320, 18 * len(labels) + 50), key="heatmap")
-    ui.note(f"{len(labels)} people, sorted by average utilisation · scroll for more")
 
 # --------------------------------------------------------------------------- dept + capacity
 H = 470
@@ -114,15 +87,47 @@ with c2, ui.card("capacity"):
     ui.chart(fig, height=H - 24, key="cap_vs_assign")
     ui.note("Red bars are above 100% of capacity.")
 
+det = ui.details("Show details: monthly workload heatmap and full resource register")
+
+# --------------------------------------------------------------------------- heatmap
+with det, ui.card("heatmap"):
+    ctrl = ui.card_header("Workload Heatmap",
+                          "Monthly utilisation per person · grey ≈ 90% target · red = overloaded · "
+                          "blue = spare capacity · blank = unassigned", controls=0.26)
+    dept_pick = ctrl.selectbox("Department", ["All departments"] + sorted(staff.department.unique()),
+                               key="heat_dept", label_visibility="collapsed")
+    monthly = metrics.utilisation_by_month(ctx.daily, staff, ctx.f.start, ctx.f.end)
+    people = staff if dept_pick == "All departments" else staff[staff.department == dept_pick]
+    months = pd.period_range(ctx.f.start, ctx.f.end, freq="M").to_timestamp()
+    mat = (monthly[monthly.employee_id.isin(people.employee_id)]
+           .pivot_table(index="employee_id", columns="month", values="utilization", aggfunc="sum")
+           .reindex(index=people.employee_id, columns=months).fillna(0.0))
+    order = mat.mean(axis=1).sort_values(ascending=False).index
+    mat = mat.loc[order]
+    names = people.set_index("employee_id").loc[order]
+    labels = [f"{n} · {d[:3]}" for n, d in zip(names.employee_name, names.department)]
+    z = (mat.values * 100).round(0)
+    z[z == 0] = float("nan")
+    fig = go.Figure(go.Heatmap(
+        z=z, x=[m.strftime("%b %y") for m in months], y=labels,
+        colorscale=DIVERGING, zmin=30, zmax=150, zmid=90, xgap=2, ygap=2,
+        colorbar=dict(title=dict(text="Util %", font=dict(size=11)), ticksuffix="%", len=0.5, y=0.75),
+        hovertemplate="%{y}<br>%{x}: %{z:.0f}%<extra></extra>"))
+    fig.update_layout(yaxis=dict(autorange="reversed", tickfont=dict(size=10.5), gridcolor="rgba(0,0,0,0)"),
+                      xaxis=dict(side="top"), margin=dict(t=24))
+    with st.container(height=480, border=False):
+        ui.chart(fig, height=max(320, 18 * len(labels) + 50), key="heatmap")
+    ui.note(f"{len(labels)} people, sorted by average utilisation · scroll for more")
+
 # --------------------------------------------------------------------------- table
-with ui.card("register"):
+with det, ui.card("register"):
     ctrl = ui.card_header("Resource Register", "Every delivery team member, sorted by utilisation", controls=0.18)
     view = util.assign(utilization=util.utilization * 100).sort_values("utilization", ascending=False)
     view = view[["employee_name", "department", "role", "weekly_capacity_hours", "projects",
                  "assigned_hours", "capacity_hours", "utilization"]]
     view["band"] = pd.cut(view.utilization, [-1, 0.001, config.UNDERUTILISED_THRESHOLD * 100,
                                              config.OVERLOAD_THRESHOLD * 100, 1e9],
-                          labels=["⚪ Bench", "🔵 Under-utilised", "🟢 Healthy", "🔴 Overloaded"]).astype(str)
+                          labels=["○ Bench", "◇ Under-utilised", "● Healthy", "■ Overloaded"]).astype(str)
     with ctrl:
         ui.csv_download(view.round(1), f"resource_utilization_{ctx.as_of}.csv")
     st.dataframe(view, hide_index=True, width="stretch", height=400, column_config={

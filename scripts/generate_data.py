@@ -1,4 +1,4 @@
-"""Generate the TechNova Solutions synthetic data set and write it to CSV.
+"""Generate the synthetic data set and write it to CSV.
 
 Usage:
     python scripts/generate_data.py                 # -> data/*.csv

@@ -11,11 +11,12 @@ trends computable.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
     Date,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -205,7 +206,8 @@ class Performance(Base):
     stories_completed: Mapped[int] = mapped_column(Integer, nullable=False)
     story_points_completed: Mapped[int] = mapped_column(Integer, nullable=False)
     bugs_reopened: Mapped[int] = mapped_column(Integer, nullable=False)
-    peer_review_score: Mapped[float] = mapped_column(Numeric(3, 1), nullable=False)
+    # Nullable: imported sheets may not have a peer review for every person-sprint.
+    peer_review_score: Mapped[float | None] = mapped_column(Numeric(3, 1))
 
     __table_args__ = (
         CheckConstraint("stories_completed <= stories_assigned", name="ck_perf_stories"),
@@ -228,6 +230,19 @@ class ProjectHistory(Base):
     sprint_velocity: Mapped[float] = mapped_column(Float, nullable=False)
     tasks_remaining: Mapped[int] = mapped_column(Integer, nullable=False)
     delayed: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class DataImport(Base):
+    """One row per data load (spreadsheet import or synthetic generator run). Kept across reloads."""
+
+    __tablename__ = "data_imports"
+
+    import_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    files: Mapped[str | None] = mapped_column(Text)
+    row_counts: Mapped[str] = mapped_column(Text, nullable=False)  # JSON {table: rows}
+    data_as_of: Mapped[date | None] = mapped_column(Date)
 
 
 # Insert order that satisfies foreign keys.

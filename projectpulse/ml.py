@@ -1,6 +1,6 @@
 """Project delay prediction.
 
-Training data: ``project_history`` - mid-project snapshots of TechNova's archived
+Training data: ``project_history`` - mid-project snapshots of the company's archived
 projects (2019-2024) with a known outcome (``delayed`` = finished after the
 planned end date). Three candidate models are compared with stratified 5-fold
 cross-validated ROC AUC; the winner is evaluated once on a held-out test set.

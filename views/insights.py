@@ -1,10 +1,9 @@
 """Page 8 - AI Insights (template-based analyst assistant)."""
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
-from projectpulse import config, insights, metrics, ml
+from projectpulse import config, insights
 from projectpulse.ui import components as ui
 from projectpulse.ui import state
 
@@ -16,47 +15,25 @@ if ctx.pm.empty:
     st.stop()
 
 # --------------------------------------------------------------------------- context
-model = state.delay_model(ctx.data, ctx.version)
-pm = ctx.pm.copy()
+ictx = state.insight_context(ctx)
+pm, open_r, util = ictx.pm, ictx.open_risks, ictx.utilization
 active = pm.status_as_of != "Completed"
-if active.any():
-    scored = model.score_frame(ml.current_features(pm[active]))
-    pm = pm.merge(scored[["project_id", "delay_probability", "risk_class"]], on="project_id", how="left")
-else:
-    pm["delay_probability"] = float("nan")
-
-open_r = metrics.open_risks_as_of(ctx.risks, ctx.f.end).copy()
-open_r["project_name"] = open_r.project_id.map(ctx.project_names)
-window_start = ctx.f.end - pd.Timedelta(weeks=8)
-util = metrics.utilisation_by_employee(ctx.daily, ctx.data["employees"], window_start, ctx.f.end)
-recent = ctx.daily[(ctx.daily.date > window_start) & (ctx.daily.date <= ctx.f.end)]
-team = {int(k): list(v) for k, v in recent.groupby("project_id").employee_id.unique().items()}
-ictx = insights.InsightContext(pm=pm, open_risks=open_r, utilization=util,
-                               tasks=ctx.tasks[ctx.tasks.created_date <= ctx.f.end], team=team)
 
 act = pm[active.values] if active.any() else pm.iloc[0:0]
 red = act[act.rag == "Red"]
 watch = act[act.rag == "Yellow"]
-high = open_r[open_r.risk_score >= config.HIGH_RISK_SCORE]
 overloaded = util[(util.utilization > config.OVERLOAD_THRESHOLD) & (util.role != "Project Manager")]
 overrun = (act.eac - act.budget).clip(lower=0).sum()
-riskiest = act.sort_values("delay_probability", ascending=False).head(1)
 
 ui.kpi_grid([
     dict(label="Needs Intervention", value=f"{len(red)}", icon="emergency", tone="bad" if len(red) else "good",
          sub=", ".join(red.project_name.str.replace("Project ", "")) or "No red projects"),
     dict(label="On Watch", value=f"{len(watch)}", icon="visibility", tone="warn" if len(watch) else "good",
          sub=", ".join(watch.project_name.str.replace("Project ", "")) or "No yellow projects"),
-    dict(label="High-Severity Risks", value=f"{len(high)}", icon="crisis_alert", tone="bad" if len(high) else "good",
-         sub=f"of {len(open_r)} open risks"),
     dict(label="Overloaded People", value=f"{len(overloaded)}", icon="local_fire_department",
          tone="warn" if len(overloaded) else "good", sub="Above 100% over the last 8 weeks"),
     dict(label="Forecast Overrun", value=ui.fmt_money(overrun), icon="trending_up",
          tone="bad" if overrun > 0 else "good", sub="Σ (EAC − budget), active projects"),
-    dict(label="Highest Delay Risk",
-         value=f"{riskiest.delay_probability.iloc[0]:.0%}" if len(riskiest) and pd.notna(riskiest.delay_probability.iloc[0]) else "–",
-         icon="psychology", tone="violet",
-         sub=riskiest.project_name.iloc[0] if len(riskiest) else "No active projects"),
 ])
 
 # --------------------------------------------------------------------------- briefing + diagnosis

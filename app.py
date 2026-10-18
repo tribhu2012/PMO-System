@@ -11,7 +11,7 @@ from projectpulse.ui import state
 from projectpulse.ui.theme import inject_css, register_plotly_template
 
 st.set_page_config(
-    page_title=f"{config.APP_NAME} · {config.COMPANY_NAME}",
+    page_title=f"{config.APP_NAME} · PMO Analytics",
     page_icon="assets/icon.svg",
     layout="wide",
     initial_sidebar_state="auto",
@@ -45,6 +45,10 @@ pages = {
         st.Page("views/insights.py", title="AI Insights", icon=":material/auto_awesome:",
                 url_path="insights"),
     ],
+    "Admin": [
+        st.Page("views/data_import.py", title="Data Import", icon=":material/upload_file:",
+                url_path="import"),
+    ],
 }
 nav = st.navigation(pages, position="sidebar")
 
@@ -52,6 +56,8 @@ filters = state.sidebar_filters(data)
 st.session_state.ctx = state.build_context(data, filters)
 
 with st.sidebar:
+    st.toggle("Analyst view", key="analyst_view",
+              help="Open every 'Show details' section. Off = the summary stakeholders need.")
     st.divider()
     foot, refresh = st.columns([3, 2], vertical_alignment="center")
     foot.markdown(f"<div class='pp-side-foot'>Data as of<br><b>{state.metrics.data_as_of(data):%d %b %Y}</b></div>",

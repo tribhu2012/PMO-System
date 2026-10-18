@@ -9,7 +9,7 @@ import streamlit as st
 from projectpulse import config, metrics
 from projectpulse.ui import components as ui
 from projectpulse.ui import state
-from projectpulse.ui.theme import GRID, INK, SEQ_BLUE, SERIES, SEVERITY_COLORS, STATUS
+from projectpulse.ui.theme import GRID, SEQ_BLUE, SERIES, SEVERITY_COLORS, STATUS
 
 ctx = state.get_ctx()
 ui.page_header("Risk Management", "Risk register, exposure and mitigation progress", "Delivery", ctx)
@@ -33,6 +33,16 @@ at_end = ctx.f.end >= ctx.data_end
 mitigation = open_r.mitigation_progress.mean() / 100 if at_end and len(open_r) else np.nan
 closure_rate = len(closed_window) / max(len(closed_window) + len(open_r), 1)
 
+exp_by = open_r.groupby("project_name").risk_score.sum().sort_values(ascending=False)
+unmitigated = int((high.status == "Open").sum())
+ui.headline((f"<b>{len(high)} high-severity risks are open</b>"
+             + (f", {unmitigated} with no mitigation started" if unmitigated else "") if len(high)
+             else "<b>No high-severity risks are open</b>")
+            + (f". Most exposure sits in <b>{exp_by.index[0].replace('Project ', '')}</b>"
+               f" ({exp_by.iloc[0]:,.0f})" + (f" and <b>{exp_by.index[1].replace('Project ', '')}</b>"
+                                              f" ({exp_by.iloc[1]:,.0f})" if len(exp_by) > 1 else "")
+               if len(exp_by) else "") + ".",
+            tone="bad" if len(high) else "good", icon="warning")
 ui.kpi_grid([
     dict(label="Open Risks", value=f"{len(open_r)}", icon="warning",
          sub=f"{len(in_window)} raised · {len(closed_window)} resolved in period"),
@@ -40,21 +50,16 @@ ui.kpi_grid([
          tone="bad" if len(high) else "good",
          badge=ui.chip(f"score ≥ {config.HIGH_RISK_SCORE}", "bad" if len(high) else "good"),
          sub=f"{(high.status == 'Open').sum()} with no mitigation started" if len(high) else "None open"),
-    dict(label="Mitigation Progress", value=ui.fmt_pct(mitigation), icon="shield", tone="violet",
-         sub=f"{(open_r.status == 'Mitigating').sum()} of {len(open_r)} open risks being mitigated",
-         help="Average mitigation completion across unresolved risks"),
     dict(label="Closure Rate", value=ui.fmt_pct(closure_rate), icon="task_alt", tone="good",
          sub="Resolved ÷ (resolved + still open)"),
-    dict(label="Risk Exposure", value=f"{open_r.risk_score.sum():,.0f}", icon="stacked_bar_chart",
-         sub="Σ probability × impact of open risks"),
     dict(label="Avg Age of Open Risks", value=f"{open_r.age_days.mean():.0f} d" if len(open_r) else "–",
          icon="hourglass_bottom", tone="warn" if len(open_r) and open_r.age_days.mean() > 60 else "accent",
          sub=f"{(open_r.age_days > 90).sum()} open for more than 90 days"),
 ])
 
-# --------------------------------------------------------------------------- matrix + scatter
+# --------------------------------------------------------------------------- matrix + exposure
 H = 380
-c1, c2 = ui.row(2)
+c1, c2 = ui.row([3, 2])
 with c1, ui.card("matrix"):
     ui.card_header("Risk Matrix", "Open risks by probability and impact · red outline = high-severity zone")
     grid = (open_r.groupby(["probability", "impact"]).size()
@@ -63,7 +68,7 @@ with c1, ui.card("matrix"):
     text = [[f"{grid.values[i, j]}" if grid.values[i, j] else "" for j in range(5)] for i in range(5)]
     fig = go.Figure(go.Heatmap(
         z=grid.values, x=[f"Impact {j}" for j in range(1, 6)], y=[f"P{i}" for i in range(1, 6)],
-        colorscale=[[0, "#f5f6f9"], [0.0001, SEQ_BLUE[1]], [0.5, SEQ_BLUE[6]], [1, SEQ_BLUE[11]]],
+        colorscale=[[0, GRID], [0.0001, SEQ_BLUE[1]], [0.5, SEQ_BLUE[6]], [1, SEQ_BLUE[11]]],
         text=text, texttemplate="%{text}", textfont=dict(size=15),
         customdata=score, xgap=4, ygap=4, showscale=False,
         hovertemplate="Probability %{y} · %{x}<br>Score %{customdata}<br>%{z} open risks<extra></extra>"))
@@ -76,7 +81,41 @@ with c1, ui.card("matrix"):
                       yaxis=dict(title="Probability", gridcolor="rgba(0,0,0,0)"))
     ui.chart(fig, height=H, key="matrix")
 
-with c2, ui.card("pi_scatter"):
+with c2, ui.card("exposure"):
+    ui.card_header("Exposure by Project", "Σ score of open risks")
+    exp = open_r.groupby("project_name").risk_score.sum().sort_values()
+    fig = go.Figure(go.Bar(x=exp.values, y=exp.index.str.replace("Project ", ""), orientation="h",
+                           marker_color=SERIES[0], text=exp.values, textposition="outside", width=0.55,
+                           cliponaxis=False, hovertemplate="%{y}: exposure %{x}<extra></extra>"))
+    fig.update_layout(xaxis=dict(visible=False, range=[0, max(exp.max(), 1) * 1.2] if len(exp) else None),
+                      yaxis=dict(gridcolor="rgba(0,0,0,0)"), margin=dict(t=8))
+    ui.chart(fig, height=H, key="exposure")
+
+# --------------------------------------------------------------------------- top risks
+with ui.card("top_risks"):
+    ctrl = ui.card_header("Top 10 Risks", "Highest score first, then oldest", controls=0.18)
+    top = open_r.sort_values(["risk_score", "age_days"], ascending=[False, False]).head(10)
+    view = top[["risk_id", "project_name", "category", "risk_description", "probability", "impact",
+                "risk_score", "severity", "status", "owner", "age_days", "mitigation_progress"]]
+    with ctrl:
+        ui.csv_download(view, f"top_risks_{ctx.as_of}.csv")
+    st.dataframe(view, hide_index=True, width="stretch", height="content", column_config={
+        "risk_id": st.column_config.NumberColumn("ID", format="R-%d"),
+        "project_name": "Project", "category": "Category",
+        "risk_description": st.column_config.TextColumn("Description", width="large"),
+        "probability": "P", "impact": "I",
+        "risk_score": st.column_config.NumberColumn("Score"),
+        "severity": "Severity", "status": "Status", "owner": "Owner",
+        "age_days": st.column_config.NumberColumn("Age (days)"),
+        "mitigation_progress": st.column_config.ProgressColumn("Mitigation", min_value=0, max_value=100,
+                                                               format="%d%%"),
+    })
+
+# --------------------------------------------------------------------------- details
+det = ui.details("Show details: probability × impact, monthly trend and full register")
+H2 = 330
+c1, c2 = ui.row([2, 3], parent=det)
+with c1, ui.card("pi_scatter"):
     ui.card_header("Probability vs Impact", "Each dot is an open risk (jittered) · size and colour = severity")
     rng = np.random.default_rng(7)
     d = open_r.assign(px=open_r.impact + rng.uniform(-0.28, 0.28, len(open_r)),
@@ -95,12 +134,9 @@ with c2, ui.card("pi_scatter"):
                           "%{customdata[3]}<extra></extra>")
     fig.update_layout(xaxis=dict(title="Impact", range=[0.5, 5.5], dtick=1, showgrid=True, gridcolor=GRID),
                       yaxis=dict(title="Probability", range=[0.5, 5.5], dtick=1))
-    ui.chart(fig, height=H, key="pi_scatter")
+    ui.chart(fig, height=H2, key="pi_scatter")
 
-# --------------------------------------------------------------------------- trends
-H2 = 330
-c1, c2 = ui.row([3, 2])
-with c1, ui.card("trend"):
+with c2, ui.card("trend"):
     ui.card_header("Risk Trends", "Open risks at each month-end by severity, with risks raised and resolved")
     month_ends = pd.date_range(ctx.f.start, ctx.f.end, freq="ME")
     if len(month_ends) == 0 or month_ends[-1] < ctx.f.end:
@@ -129,19 +165,8 @@ with c1, ui.card("trend"):
     fig.update_layout(barmode="stack", hovermode="x unified", bargap=0.4)
     ui.chart(fig, height=H2, key="risk_trend")
 
-with c2, ui.card("exposure"):
-    ui.card_header("Exposure by Project", "Σ score of open risks")
-    exp = open_r.groupby("project_name").risk_score.sum().sort_values()
-    fig = go.Figure(go.Bar(x=exp.values, y=exp.index.str.replace("Project ", ""), orientation="h",
-                           marker_color=SERIES[0], text=exp.values, textposition="outside", width=0.55,
-                           cliponaxis=False, hovertemplate="%{y}: exposure %{x}<extra></extra>"))
-    fig.update_layout(xaxis=dict(visible=False, range=[0, max(exp.max(), 1) * 1.2] if len(exp) else None),
-                      yaxis=dict(gridcolor="rgba(0,0,0,0)"), margin=dict(t=8))
-    ui.chart(fig, height=H2, key="exposure")
-
-# --------------------------------------------------------------------------- top risks
-with ui.card("top_risks"):
-    ctrl = ui.card_header("Top Risks", "Unresolved risks ranked by score, then age", controls=0.18)
+with det, ui.card("all_risks"):
+    ctrl = ui.card_header("Full Risk Register", "Every unresolved risk, ranked by score, then age", controls=0.18)
     top = open_r.sort_values(["risk_score", "age_days"], ascending=[False, False])
     view = top[["risk_id", "project_name", "category", "risk_description", "probability", "impact",
                 "risk_score", "severity", "status", "owner", "age_days", "mitigation_progress"]]

@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from .. import config, metrics, ml
-from ..database import create_schema, create_views, database_ready, get_engine, load_tables, read_all
+from .. import config, insights, metrics, ml
+from ..database import database_ready, get_engine, read_all, record_import, replace_all
 
 PERIODS = {
     "Last 3 months": 3,
@@ -30,9 +30,8 @@ def bootstrap_database() -> None:
     from ..data_generator import generate_dataset
 
     engine = get_engine()
-    create_schema(engine)
-    load_tables(engine, generate_dataset())
-    create_views(engine)
+    counts = replace_all(engine, generate_dataset())
+    record_import(engine, "synthetic", counts, data_as_of=config.DATA_AS_OF)
 
 
 @st.cache_resource(show_spinner="Loading portfolio data…")
@@ -44,7 +43,7 @@ def load_data() -> dict[str, pd.DataFrame]:
     engine = get_engine()
     if not database_ready(engine):
         if engine.dialect.name == "sqlite":
-            with st.spinner("First run: generating TechNova Solutions demo data…"):
+            with st.spinner("First run: generating demo data…"):
                 bootstrap_database()
         else:
             st.error("The database is empty. Run `python scripts/load_data.py` "
@@ -234,3 +233,24 @@ def active_window_util(ctx: PageContext) -> pd.DataFrame:
 def safe_mean(s: pd.Series) -> float:
     s = pd.to_numeric(s, errors="coerce").dropna()
     return float(s.mean()) if len(s) else np.nan
+
+
+def insight_context(ctx: PageContext) -> insights.InsightContext:
+    """Project metrics plus delay predictions, open risks and recent utilisation, for the
+    insights engine (used by the Executive Dashboard and the AI Insights page)."""
+    model = delay_model(ctx.data, ctx.version)
+    pm = ctx.pm.copy()
+    active = pm.status_as_of != "Completed"
+    if active.any():
+        scored = model.score_frame(ml.current_features(pm[active]))
+        pm = pm.merge(scored[["project_id", "delay_probability", "risk_class"]], on="project_id", how="left")
+    else:
+        pm["delay_probability"] = np.nan
+    open_r = metrics.open_risks_as_of(ctx.risks, ctx.f.end).copy()
+    open_r["project_name"] = open_r.project_id.map(ctx.project_names)
+    window_start = ctx.f.end - pd.Timedelta(weeks=8)
+    util = metrics.utilisation_by_employee(ctx.daily, ctx.data["employees"], window_start, ctx.f.end)
+    recent = ctx.daily[(ctx.daily.date > window_start) & (ctx.daily.date <= ctx.f.end)]
+    team = {int(k): list(v) for k, v in recent.groupby("project_id").employee_id.unique().items()}
+    return insights.InsightContext(pm=pm, open_risks=open_r, utilization=util,
+                                   tasks=ctx.tasks[ctx.tasks.created_date <= ctx.f.end], team=team)

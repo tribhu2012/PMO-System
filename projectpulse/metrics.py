@@ -402,12 +402,13 @@ def employee_performance(tasks: pd.DataFrame, performance: pd.DataFrame,
     out["sprint_contribution"] = (out.contribution_ratio.clip(upper=1.5) / 1.5 * 100).fillna(0)
     out["collaboration"] = out.peer_review_score / 5 * 100
     w = config.PERFORMANCE_WEIGHTS
-    out["performance_score"] = (
-        w["task_completion"] * out.task_completion_rate * 100
-        + w["on_time"] * out.on_time_rate * 100
-        + w["sprint_contribution"] * out.sprint_contribution
-        + w["collaboration"] * out.collaboration
-    )
+    delivery = (w["task_completion"] * out.task_completion_rate * 100
+                + w["on_time"] * out.on_time_rate * 100
+                + w["sprint_contribution"] * out.sprint_contribution)
+    # Without a peer review (imported data may lack one) the other three weights are rescaled.
+    out["performance_score"] = np.where(
+        out.collaboration.notna(), delivery + w["collaboration"] * out.collaboration.fillna(0),
+        delivery / (1 - w["collaboration"]))
     out = out.join(employees.set_index("employee_id")[["employee_name", "department", "role"]])
     out = out.reset_index().sort_values("performance_score", ascending=False)
     out["rank"] = np.arange(1, len(out) + 1)

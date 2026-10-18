@@ -1,16 +1,18 @@
 """Page 1 - Executive Dashboard."""
 from __future__ import annotations
 
+import html
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from projectpulse import config, metrics
+from projectpulse import config, insights, metrics
 from projectpulse.ui import components as ui
 from projectpulse.ui import state
 from projectpulse.ui.theme import (
-    AXIS, GRID, INK, PROJECT_STATUS_COLORS, RAG_EMOJI, SERIES, SEVERITY_COLORS, STATUS,
+    AREA, BAND, GRID, INK, PLANNED, PROJECT_STATUS_COLORS, RAG_EMOJI, SERIES, SEVERITY_COLORS, STATUS,
 )
 
 ctx = state.get_ctx()
@@ -23,11 +25,6 @@ if pm.empty:
 
 # --------------------------------------------------------------------------- KPIs
 k = metrics.portfolio_kpis(pm)
-util = state.active_window_util(ctx)
-allocated = util[util.assigned_hours > 0]
-avg_util = allocated.assigned_hours.sum() / allocated.capacity_hours.sum() if len(allocated) else float("nan")
-overloaded = int((util.utilization > config.OVERLOAD_THRESHOLD).sum())
-completed = int((pm.status_as_of == "Completed").sum())
 health_rag = metrics.rag(k["portfolio_health"])
 
 trend = state.health_trend(ctx.data, ctx.f.start.strftime("%Y-%m-%d"), ctx.as_of, ctx.version)
@@ -37,65 +34,117 @@ monthly = (weighted.w / weighted.budget).rename("health").reset_index()
 prev_health = monthly.health.iloc[-2] if len(monthly) >= 2 else k["portfolio_health"]
 health_delta = k["portfolio_health"] - prev_health
 
+ictx = state.insight_context(ctx)
+act = ictx.pm[ictx.pm.status_as_of != "Completed"].sort_values("health_score")
+needs = act[act.rag != "Green"]
+red = act[act.rag == "Red"]
+overrun = (act.eac - act.budget).clip(lower=0).sum()
+
+
+def _names(df: pd.DataFrame) -> str:
+    n = df.project_name.str.replace("Project ", "").tolist()
+    return n[0] if len(n) == 1 else ", ".join(n[:-1]) + " and " + n[-1]
+
+
+trend_word = "up" if health_delta >= 0 else "down"
+if len(red):
+    ask = (f"<b>{len(red)} project{'s' if len(red) > 1 else ''} need{'' if len(red) > 1 else 's'} a "
+           f"decision:</b> {_names(red)}.")
+elif len(needs):
+    ask = f"No project is Red. <b>{len(needs)} on watch:</b> {_names(needs)}."
+else:
+    ask = "<b>Every active project is Green.</b>"
+ui.headline(f"Portfolio health is <b>{k['portfolio_health']:.0f} ({health_rag})</b>, {trend_word} "
+            f"{abs(health_delta):.1f} points on last month. {ask}",
+            tone={"Green": "good", "Yellow": "warn", "Red": "bad"}.get(health_rag, "neutral"))
+
 ui.kpi_grid([
-    dict(label="Active Projects", value=f"{k['active_projects']}", icon="folder_open",
-         sub=f"{k['total_projects']} in scope · {completed} completed"),
     dict(label="Portfolio Health", value=f"{k['portfolio_health']:.0f}", icon="favorite",
          tone={"Green": "good", "Yellow": "warn", "Red": "bad"}.get(health_rag, "accent"),
          badge=ui.rag_chip(health_rag),
-         sub=f"{'▲' if health_delta >= 0 else '▼'} {abs(health_delta):.1f} pts vs prior month",
+         sub=f"{k['active_projects']} active projects · {'▲' if health_delta >= 0 else '▼'} "
+             f"{abs(health_delta):.1f} vs last month",
          help="Budget-weighted average health score of active projects"),
-    dict(label="Budget Utilization", value=ui.fmt_pct(k["budget_utilization"]), icon="account_balance_wallet",
-         sub=f"{ui.fmt_money(pm[pm.status_as_of != 'Completed'].ac.sum())} spent · CPI {k['portfolio_cpi']:.2f}",
-         help="Actual cost to date ÷ budget, active projects"),
+    dict(label="Budget Used", value=ui.fmt_pct(k["budget_utilization"]), icon="account_balance_wallet",
+         tone="bad" if overrun > 0 else "good",
+         sub=f"Forecast overrun {ui.fmt_money(overrun)} · CPI {k['portfolio_cpi']:.2f}",
+         help="Actual cost to date ÷ budget, active projects. Overrun = Σ(EAC − budget)."),
     dict(label="Delayed Projects", value=f"{k['delayed_projects']}", icon="schedule",
          tone="bad" if k["delayed_projects"] >= 3 else ("warn" if k["delayed_projects"] else "good"),
-         sub=f"{int((pm.is_delayed & pm.completed_as_of).sum())} delivered late · SPI {k['portfolio_spi']:.2f}",
+         sub=f"of {k['total_projects']} in scope · SPI {k['portfolio_spi']:.2f}",
          help="Completed late, or forecast to finish >10% of duration past plan"),
-    dict(label="Open Risks", value=f"{k['open_risks']}", icon="warning",
+    dict(label="High Risks", value=f"{k['high_risks']}", icon="crisis_alert",
          tone="bad" if k["high_risks"] else "good",
-         badge=ui.chip(f"{k['high_risks']} high", "bad" if k["high_risks"] else "good"),
-         sub=f"Exposure {pm.risk_exposure.sum():,.0f} (probability × impact)"),
-    dict(label="Resource Utilization", value=ui.fmt_pct(avg_util), icon="groups", tone="violet",
-         badge=ui.chip(f"{overloaded} > 100%", "warn" if overloaded else "good"),
-         sub="Allocated delivery staff, selected period"),
+         sub=f"of {k['open_risks']} open risks · score ≥ {config.HIGH_RISK_SCORE}"),
 ])
+
+# --------------------------------------------------------------------------- decisions
+with ui.card("decisions"):
+    ui.card_header("Needs a Decision", "Lowest-health Red and Yellow projects · main driver and the recommended action")
+    if needs.empty:
+        ui.note("Nothing to escalate. All active projects are Green.")
+    items = []
+    for r in needs.head(3).itertuples():
+        d = insights.diagnose(ictx.pm[ictx.pm.project_id == r.project_id].iloc[0], ictx)
+        why = d.drivers[0].text if d.drivers else "Health is below target."
+        do = d.drivers[0].recommendation if d.drivers else "Review in the weekly status meeting."
+        items.append(f"<div class='pp-decision'><div class='pp-dhead'>{ui.rag_chip(r.rag)}"
+                     f"<span class='pp-dscore'>{r.health_score:.0f}</span></div>"
+                     f"<div class='pp-dname'>{html.escape(r.project_name)}</div>"
+                     f"<div class='pp-dpm'>{html.escape(r.project_manager)} · {html.escape(r.department)}</div>"
+                     f"<div class='pp-dwhy'>{html.escape(why)}</div>"
+                     f"<div class='pp-ddo'><b>Action</b>{html.escape(do)}</div></div>")
+    st.markdown(f"<div class='pp-decisions'>{''.join(items)}</div>", unsafe_allow_html=True)
+    if len(needs) > 3:
+        ui.note(f"+ {len(needs) - 3} more below target. See Project Portfolio.")
+
+# --------------------------------------------------------------------------- health trend
+with ui.card("health_trend"):
+    ui.card_header("Portfolio Health Trend", "Budget-weighted health of active projects at each month-end")
+    lo = max(0, min(monthly.health.min(), config.HEALTH_YELLOW) - 8)
+    hi = min(100, max(monthly.health.max(), config.HEALTH_GREEN) + 6)
+    fig = go.Figure()
+    for y0, y1, color, label in [
+            (lo, config.HEALTH_YELLOW, BAND["Red"], f"Red < {config.HEALTH_YELLOW}"),
+            (config.HEALTH_YELLOW, config.HEALTH_GREEN, BAND["Yellow"],
+             f"Yellow {config.HEALTH_YELLOW}–{config.HEALTH_GREEN - 1}"),
+            (config.HEALTH_GREEN, hi, BAND["Green"], f"Green ≥ {config.HEALTH_GREEN}")]:
+        if y1 > y0:
+            fig.add_hrect(y0=y0, y1=y1, fillcolor=color, line_width=0, layer="below")
+            fig.add_annotation(x=1, xref="paper", y=(y0 + y1) / 2, text=label, showarrow=False,
+                               xanchor="left", xshift=8, font=dict(size=11, color=INK["muted"]))
+    fig.add_hline(y=config.HEALTH_GREEN, line=dict(color=STATUS["good"], dash="dash", width=1))
+    delta = monthly.health.diff()
+    month = monthly.date.dt.to_period("M").dt.to_timestamp()  # label each month-end point by its month
+    fig.add_scatter(x=month, y=monthly.health, mode="lines+markers", name="Portfolio",
+                    line=dict(color=SERIES[0], width=2.5),
+                    marker=dict(size=7, color=SERIES[0], line=dict(color="#fff", width=1.5)),
+                    customdata=delta.fillna(0),
+                    hovertemplate="%{x|%b %Y}<br>Health <b>%{y:.1f}</b> (%{customdata:+.1f})<extra></extra>")
+    last = monthly.iloc[-1]
+    fig.add_scatter(x=[month.iloc[-1]], y=[last.health], mode="markers", hoverinfo="skip", showlegend=False,
+                    marker=dict(size=13, color=SERIES[0], line=dict(color="#fff", width=3)))
+    fig.add_annotation(x=month.iloc[-1], y=last.health, text=f"<b>{last.health:.0f}</b>", showarrow=False,
+                       yshift=18, font=dict(size=14, color=INK["primary"]))
+    fig.update_layout(showlegend=False, margin=dict(t=10, r=96, l=8, b=4),
+                      yaxis=dict(range=[lo, hi], dtick=10, title=None),
+                      xaxis=dict(tickformat="%b %Y", dtick="M1", showgrid=False,
+                                 range=[month.min() - pd.Timedelta(days=12),
+                                        month.max() + pd.Timedelta(days=12)]))
+    ui.chart(fig, height=300, key="health_trend")
+
+det = ui.details("Show details: budget, status, risks and departments")
 
 # --------------------------------------------------------------------------- row 1
 H1 = 300
-c1, c2 = ui.row([2, 3])
-with c1, ui.card("gauge"):
-    ui.card_header("Portfolio Health", "40% schedule · 30% budget · 30% risk")
-    fig = go.Figure(go.Indicator(
-        mode="gauge+number+delta",
-        value=k["portfolio_health"],
-        number=dict(font=dict(size=40, color=INK["primary"]), valueformat=".0f"),
-        delta=dict(reference=prev_health, valueformat=".1f", increasing=dict(color="#0a7f0a"),
-                   decreasing=dict(color=STATUS["critical"])),
-        gauge=dict(
-            axis=dict(range=[0, 100], tickwidth=1, tickcolor=AXIS, tickfont=dict(color=INK["muted"], size=10)),
-            bar=dict(color=INK["primary"], thickness=0.25),
-            bgcolor="rgba(0,0,0,0)", borderwidth=0,
-            steps=[dict(range=[0, config.HEALTH_YELLOW], color="rgba(208,59,59,0.20)"),
-                   dict(range=[config.HEALTH_YELLOW, config.HEALTH_GREEN], color="rgba(250,178,25,0.28)"),
-                   dict(range=[config.HEALTH_GREEN, 100], color="rgba(12,163,12,0.20)")],
-        ),
-    ))
-    fig.update_layout(margin=dict(l=28, r=28, t=16, b=0))
-    ui.chart(fig, height=H1 - 56, key="gauge")
-    bands = pm[pm.status_as_of != "Completed"].rag.value_counts()
-    st.markdown("<div class='pp-legend' style='justify-content:center'>" + "".join(
-        f"<span>{ui.rag_chip(r)} {bands.get(r, 0)}</span>" for r in ["Green", "Yellow", "Red"])
-        + "<span class='pp-note'>active projects</span></div>", unsafe_allow_html=True)
-
-with c2, ui.card("budget"):
+with det, ui.card("budget"):
     ctrl = ui.card_header("Budget Trend", "Cumulative or monthly spend, planned vs actual", controls=0.36)
     mode = ctrl.segmented_control("View", ["To date", "Monthly"], default="To date",
                                   key="budget_mode", label_visibility="collapsed", width="stretch")
     bt = metrics.budget_trend(ctx.projects, ctx.tasks, ctx.f.start, ctx.f.end)
     fig = go.Figure()
     if mode == "Monthly":
-        fig.add_bar(x=bt.month, y=bt.planned, name="Planned", marker_color="#b7d3f6",
+        fig.add_bar(x=bt.month, y=bt.planned, name="Planned", marker_color=PLANNED,
                     hovertemplate="%{x|%b %Y}<br>Planned $%{y:,.0f}<extra></extra>")
         fig.add_bar(x=bt.month, y=bt.actual, name="Actual", marker_color=SERIES[0],
                     hovertemplate="%{x|%b %Y}<br>Actual $%{y:,.0f}<extra></extra>")
@@ -105,14 +154,14 @@ with c2, ui.card("budget"):
                         line=dict(color=INK["muted"], dash="dot"),
                         hovertemplate="%{x|%b %Y}<br>Planned $%{y:,.0f}<extra></extra>")
         fig.add_scatter(x=bt.month, y=bt.actual_cum, name="Actual", line=dict(color=SERIES[0]),
-                        fill="tozeroy", fillcolor="rgba(42,120,214,0.07)",
+                        fill="tozeroy", fillcolor=AREA,
                         hovertemplate="%{x|%b %Y}<br>Actual $%{y:,.0f}<extra></extra>")
     fig.update_layout(hovermode="x unified", yaxis_tickprefix="$", yaxis_tickformat="~s")
     ui.chart(fig, height=H1, key="budget_trend")
 
 # --------------------------------------------------------------------------- row 2
 H2 = 270
-c1, c2 = ui.row(2)
+c1, c2 = ui.row(2, parent=det)
 with c1, ui.card("status"):
     ui.card_header("Project Status Distribution", "Computed from SPI, forecast finish and health")
     order = ["On Track", "At Risk", "Delayed", "Completed"]
@@ -149,7 +198,7 @@ with c2, ui.card("risk_breakdown"):
         ui.chart(fig, height=H2, key="risk_breakdown")
 
 # --------------------------------------------------------------------------- row 3
-with ui.card("dept"):
+with det, ui.card("dept"):
     ui.card_header("Department Comparison", "Average health, cost performance and open risks by owning department")
     dept = pm.groupby("department").agg(
         health=("health_score", "mean"), ev=("ev", "sum"), ac=("ac", "sum"),
@@ -178,23 +227,10 @@ with ui.card("dept"):
     fig.update_layout(showlegend=False, margin=dict(t=30, r=24))
     ui.chart(fig, height=250, key="dept_cmp")
 
-# --------------------------------------------------------------------------- row 4
-H4 = 320
-c1, c2 = ui.row([3, 2])
-with c1, ui.card("health_trend"):
-    ui.card_header("Portfolio Health Trend", "Budget-weighted health of active projects at each month-end")
-    fig = go.Figure()
-    fig.add_hrect(y0=0, y1=config.HEALTH_YELLOW, fillcolor="rgba(208,59,59,0.05)", line_width=0)
-    fig.add_hrect(y0=config.HEALTH_YELLOW, y1=config.HEALTH_GREEN, fillcolor="rgba(250,178,25,0.07)", line_width=0)
-    fig.add_scatter(x=monthly.date, y=monthly.health, mode="lines+markers", name="Portfolio",
-                    line=dict(color=SERIES[0]), marker=dict(size=8, line=dict(color="#fff", width=2)),
-                    hovertemplate="%{x|%b %Y}<br>Health %{y:.1f}<extra></extra>")
-    fig.update_layout(yaxis=dict(range=[0, 100]), showlegend=False, margin=dict(t=8))
-    ui.chart(fig, height=H4, key="health_trend")
-
-with c2, ui.card("attention"):
-    ctrl = ui.card_header("Needs Attention", "Lowest-health active projects", controls=0.36)
-    watch = pm[pm.status_as_of != "Completed"].nsmallest(8, "health_score")
+# --------------------------------------------------------------------------- full list
+with det, ui.card("attention"):
+    ctrl = ui.card_header("All Active Projects", "Lowest health first", controls=0.2)
+    watch = pm[pm.status_as_of != "Completed"].sort_values("health_score")
     view = pd.DataFrame({
         "Project": watch.project_name.str.replace("Project ", ""),
         "Health": watch.health_score.round(0),
